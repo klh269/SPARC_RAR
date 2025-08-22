@@ -64,6 +64,11 @@ def g_obs_fit(table, i_table, data, bulged, pdisk:float=pdisk, pbul:float=pbul):
     if bulged: smp_pbul = sample("Bulge M/L", dist.TruncatedNormal(pbul, 0.175, low=0.0))
     else: smp_pbul = deterministic("Bulge M/L", jnp.array(0.0))
 
+    # Sample luminosity.
+    L = sample("L", dist.TruncatedNormal(table["L"][i_table], table["e_L"][i_table], low=0.0))
+    smp_pdisk *= L / table["L"][i_table]
+    smp_pbul *= L / table["L"][i_table]
+
     # Sample inclination (convert from degrees to radians!) and scale Vobs accordingly
     inc_min, inc_max = 15 * jnp.pi / 180, 150 * jnp.pi / 180
     inc = sample("inc",dist.TruncatedNormal(table["Inc"][i_table]*jnp.pi/180, table["e_Inc"][i_table]*jnp.pi/180, low=inc_min, high=inc_max))
@@ -128,7 +133,6 @@ if __name__ == "__main__":
     table = pd.read_fwf(file, skiprows=98, names=SPARC_c)
 
     unhooked_RAR = {}
-    # results = []
     for i, gal in enumerate(galaxies):
         print(f"Processing galaxy {gal} ({i+1}/26)...")
         i_table = np.where(table["Galaxy"] == gal)[0][0]
@@ -145,7 +149,8 @@ if __name__ == "__main__":
             "Disk M/L": samples["Disk M/L"],
             "Bulge M/L": samples["Bulge M/L"],
             "inc": samples["inc"],
-            "Distance": samples["Distance"]
+            "Distance": samples["Distance"],
+            "L": samples["L"],
         }
         # Only include Bulge M/L if bulged
         if not SPARC_data[gal]["bulged"]:
