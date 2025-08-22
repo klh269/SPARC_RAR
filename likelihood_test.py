@@ -10,7 +10,7 @@ from numpyro.infer import MCMC, NUTS, init_to_median
 import matplotlib.pyplot as plt
 import corner
 
-from rm_hooks import monotonic_ll
+from rm_hooks import global_monotonic_ll
 
 def test_function(x, a:float, b:float, c:float, d:float):
     return a * jnp.cos(x) + b * x + c * jnp.exp(x) + d
@@ -21,7 +21,7 @@ def ll_test(x):
     c = sample("c", dist.TruncatedNormal(0.0, 1.0, low=-3.0, high=3.0))
     d = sample("d", dist.TruncatedNormal(0.0, 1.0, low=-3.0, high=3.0))
     y = deterministic("y", test_function(x, a, b, c, d))
-    ll = monotonic_ll(y, jnp.ones_like(y)*0.1)
+    ll = global_monotonic_ll(y, jnp.ones_like(y)*0.1)
     deterministic("log_likelihood", ll)
     factor("ll", ll)
 
