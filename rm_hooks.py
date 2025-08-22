@@ -9,6 +9,7 @@ import jax
 from jax import numpy as jnp
 import jax.random as random
 from jax.scipy.stats import norm
+from jax.scipy.special import log_ndtr
 
 import numpyro
 from numpyro import distributions as dist
@@ -44,10 +45,10 @@ def errV2errA(vel, vel_err, rad):
 
 def monotonic_ll(mu, sigma):
     """
-    mu: array of means [mu1, mu2, ..., mun]
-    sigma: array of std deviations [sigma1, ..., sigman]
+    mu: array of means [mu_1, mu_2, ..., mu_n]
+    sigma: array of std deviations [sigma_1, ..., sigma_n]
     
-    Returns log-likelihood that the sequence is monotonically increasing.
+    Returns log-likelihood that the sequence is (pairwise) monotonically increasing.
     """
     diffs = mu[1:] - mu[:-1]
     denom = jnp.sqrt(sigma[1:]**2 + sigma[:-1]**2)
@@ -56,6 +57,24 @@ def monotonic_ll(mu, sigma):
     
     logL = jnp.sum(jnp.log(probs + 1e-12))  # Avoid log(0) with small epsilon
     return logL
+
+def global_monotonic_ll(mu, sigma):
+    """
+    mu: array of means [mu_1, mu_2, ..., mu_n]
+    sigma: array of std deviations [sigma_1, ..., sigma_n]
+
+    Returns: scalar log-likelihood preferring x_m > x_n for all m > n (global monotonicity).
+    """
+    # Pairwise differences and denominators via broadcasting
+    dmu = mu[:, None] - mu[None, :]                     # shape (n, n)
+    denom = jnp.sqrt(sigma[:, None]**2 + sigma[None, :]**2) # (n, n)
+
+    # z-scores; mask diagonal / lower triangle
+    z = dmu / (denom + 1e-30)                           # avoid division by zero
+    mask = jnp.tril(jnp.ones_like(z, dtype=bool), k=-1) # m > n -> lower triangle
+
+    # Sum log Phi only over m > n
+    return jnp.sum(jnp.where(mask, log_ndtr(z), 0.0))
 
 def g_obs_fit(table, i_table, data, bulged, pdisk:float=pdisk, pbul:float=pbul):
     # Sample mass-to-light ratios.
