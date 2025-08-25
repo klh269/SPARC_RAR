@@ -8,7 +8,7 @@ import argparse
 import jax
 from jax import numpy as jnp
 import jax.random as random
-from jax.scipy.stats import norm
+# from jax.scipy.stats import norm
 from jax.scipy.special import log_ndtr
 
 import numpyro
@@ -76,8 +76,9 @@ def global_monotonic_ll(mu, sigma):
     # Sum log Phi only over m < n
     return jnp.sum(jnp.where(mask, log_ndtr(z), 0.0))
 
-def discrete_monotonic_ll(arr):
+def discrete_monotonic_ll(arr, scale=1.0):
     """
+    Normalized likelihood based on pairwise comparisons using the "Thurstone-Mosteller method".
     arr: an array of deterministic values [a_1, a_2, ..., a_n]
 
     Returns: log-likelihood that penalizes pairwise non-monotonicity for all valid pairs.
@@ -89,22 +90,27 @@ def discrete_monotonic_ll(arr):
     
     # Get upper triangle (i < j)
     i_idx, j_idx = jnp.triu_indices(n, k=1)
-    differences = diff[i_idx, j_idx]
+    differences = diff[i_idx, j_idx]  # = arr[i] - arr[j] for i < j
     
-    score = ( jnp.sum(differences >= 0) + 1 ) / ( len(differences) + 1 )    # +1s inserted to avoid log(0).
-    return jnp.log(score)
+    probs = jax.nn.sigmoid( differences / scale )
+    total_log_prob = jnp.sum(jnp.log(probs))
+
+    return total_log_prob
 
 
 def g_obs_fit(table, i_table, data, bulged, pdisk:float=pdisk, pbul:float=pbul):
     # Sample mass-to-light ratios.
-    log_pgas = sample("Gas M/L (log)", transformed_normal(jnp.log10(1.), 0.04))
+    # log_pgas = sample("Gas M/L (log)", transformed_normal(jnp.log10(1.), 0.04))
+    log_pgas = sample("Gas M/L (log)", dist.Uniform(jnp.log10(1.)-0.4, jnp.log10(1.)+0.8))  # Remove all priors for fit.
     prior_log_pgas = sample("Gas M/L (prior)", transformed_normal(jnp.log10(1.), 0.04))     # Track prior for later plots.
 
-    log_pdisk = sample("Disk M/L (log)", transformed_normal(jnp.log10(pdisk), 0.1))
+    # log_pdisk = sample("Disk M/L (log)", transformed_normal(jnp.log10(pdisk), 0.1))
+    log_pdisk = sample("Disk M/L (log)", dist.Uniform(jnp.log10(pdisk)-1.0, jnp.log10(pdisk)+2.0))
     prior_log_pdisk = sample("Disk M/L (prior)", transformed_normal(jnp.log10(pdisk), 0.1))
 
     if bulged:
-        log_pbul = sample("Bulge M/L (log)", transformed_normal(jnp.log10(pbul), 0.1))
+        # log_pbul = sample("Bulge M/L (log)", transformed_normal(jnp.log10(pbul), 0.1))
+        log_pbul = sample("Bulge M/L (log)", dist.Uniform(jnp.log10(pbul)-1.0, jnp.log10(pbul)+2.0))
         prior_log_pbul = sample("Bulge M/L (prior)", transformed_normal(jnp.log10(pbul), 0.1))
     else:
         log_pbul = deterministic("Bulge M/L (log)", jnp.array(0.0))
@@ -114,7 +120,8 @@ def g_obs_fit(table, i_table, data, bulged, pdisk:float=pdisk, pbul:float=pbul):
     prior_smp_pgas, prior_smp_pdisk, prior_smp_pbul = 10**prior_log_pgas, 10**prior_log_pdisk, 10**prior_log_pbul
 
     # Sample luminosity.
-    L = sample("L", dist.TruncatedNormal(table["L"][i_table], table["e_L"][i_table], low=0.0))
+    # L = sample("L", dist.TruncatedNormal(table["L"][i_table], table["e_L"][i_table], low=0.0))
+    L = sample("L", dist.Uniform(0.0, table["L"][i_table] + table["e_L"][i_table] * 20.0))
     prior_L = sample("L (prior)", dist.TruncatedNormal(table["L"][i_table], table["e_L"][i_table], low=0.0))
     smp_pdisk *= L / table["L"][i_table]
     prior_smp_pdisk *= prior_L / table["L"][i_table]
@@ -123,7 +130,8 @@ def g_obs_fit(table, i_table, data, bulged, pdisk:float=pdisk, pbul:float=pbul):
 
     # Sample inclination (convert from degrees to radians!) and scale Vobs accordingly
     inc_min, inc_max = 15 * jnp.pi / 180, 150 * jnp.pi / 180
-    inc = sample("inc", dist.TruncatedNormal(table["Inc"][i_table]*jnp.pi/180, table["e_Inc"][i_table]*jnp.pi/180, low=inc_min, high=inc_max))
+    # inc = sample("inc", dist.TruncatedNormal(table["Inc"][i_table]*jnp.pi/180, table["e_Inc"][i_table]*jnp.pi/180, low=inc_min, high=inc_max))
+    inc = sample("inc", dist.Uniform(inc_min, inc_max))
     prior_inc = sample("inc (prior)", dist.TruncatedNormal(table["Inc"][i_table]*jnp.pi/180, table["e_Inc"][i_table]*jnp.pi/180, low=inc_min, high=inc_max))
     inc_scaling = jnp.sin(table["Inc"][i_table]*jnp.pi/180) / jnp.sin(inc)
     prior_inc_scaling = jnp.sin(table["Inc"][i_table]*jnp.pi/180) / jnp.sin(prior_inc)
@@ -134,7 +142,8 @@ def g_obs_fit(table, i_table, data, bulged, pdisk:float=pdisk, pbul:float=pbul):
     prior_e_Vobs = deterministic("e_Vobs (prior)", jnp.array(data["errV"]) * prior_inc_scaling)
 
     # Sample distance to the galaxy.
-    d = sample("Distance", dist.TruncatedNormal(table["D"][i_table], table["e_D"][i_table], low=1e-10))
+    # d = sample("Distance", dist.TruncatedNormal(table["D"][i_table], table["e_D"][i_table], low=1e-10))
+    d = sample("Distance", dist.Uniform(0.0, table["D"][i_table] + table["e_D"][i_table] * 20.0))
     prior_d = sample("Distance (prior)", dist.TruncatedNormal(table["D"][i_table], table["e_D"][i_table], low=1e-10))
     d_scaling = d / table["D"][i_table]
     prior_d_scaling = prior_d / table["D"][i_table]
@@ -168,8 +177,10 @@ def g_obs_fit(table, i_table, data, bulged, pdisk:float=pdisk, pbul:float=pbul):
     prior_e_gobs = errV2errA(prior_Vobs, prior_e_Vobs, prior_r)
 
     # Track original log-likelihood for reference.
-    prior_ll_gbar = discrete_monotonic_ll(prior_g_bar)
-    prior_ll_gobs = global_monotonic_ll(prior_g_obs, prior_e_gobs)
+    # Take the log of gbar and gobs before calculating the likelihood so that all pairs are weighted (approx) equally.
+    prior_log_gbar, prior_log_gobs, prior_log_errg = jnp.log10(prior_g_bar), jnp.log10(prior_g_obs), jnp.log10(prior_e_gobs)
+    prior_ll_gbar = discrete_monotonic_ll(prior_log_gbar)
+    prior_ll_gobs = global_monotonic_ll(prior_log_gobs, prior_log_errg)
 
     # Small variation to artificially create dynamic range for corner plots whenever necessary.
     deterministic("prior_ll_gobs", prior_ll_gobs)
@@ -179,8 +190,9 @@ def g_obs_fit(table, i_table, data, bulged, pdisk:float=pdisk, pbul:float=pbul):
     deterministic("prior_ll", prior_ll_gbar + prior_ll_gobs)
 
     # Likelihood: monotonicity constraint on the RAR (probabilistic for g_obs and deterministic for g_bar).
-    ll_gbar = discrete_monotonic_ll(g_bar)
-    ll_gobs = global_monotonic_ll(g_obs, e_gobs)
+    log_gbar, log_gobs, log_errg = jnp.log10(g_bar), jnp.log10(g_obs), jnp.log10(e_gobs)
+    ll_gbar = discrete_monotonic_ll(log_gbar)
+    ll_gobs = global_monotonic_ll(log_gobs, log_errg)
     # ll = deterministic("log_likelihood", ll_gobs)   # Testing without considering monotonicity in g_bar.
 
     deterministic("log_likelihood_gobs", ll_gobs)
@@ -197,7 +209,7 @@ def set_args():
     assert numpyro.__version__.startswith("0.15.0")
     numpyro.enable_x64()
     parser = argparse.ArgumentParser(description="MCMC for unhooking RARs")
-    parser.add_argument("--progress-bar", default=False, type=bool, help="Show MCMC progress bar.")
+    parser.add_argument("--testing", default=False, type=bool, help="Testing; runs first two galaxies and shows MCMC progress bar.")
     args = parser.parse_args()
 
     return args
@@ -205,6 +217,7 @@ def set_args():
 
 if __name__ == "__main__":
     args = set_args()
+    testing = args.testing
 
     SPARC_data, _, _ = get_SPARC_data()
     galaxies = [
@@ -222,6 +235,9 @@ if __name__ == "__main__":
             "SBdisk", "MHI", "RHI", "Vflat", "e_Vflat", "Q", "Ref."]
     table = pd.read_fwf(file, skiprows=98, names=SPARC_c)
 
+    if testing:
+        galaxies = galaxies[:2]
+
     unhooked_RAR = {}
     for i, gal in enumerate(galaxies):
         print(f"\nProcessing galaxy {gal} ({i+1}/26)...")
@@ -231,24 +247,24 @@ if __name__ == "__main__":
         bulged = SPARC_data[gal]["bulged"]
 
         nuts_kernel = NUTS(g_obs_fit, init_strategy=init_to_median(num_samples=1000))
-        mcmc = MCMC(nuts_kernel, num_warmup=10000, num_samples=20000, progress_bar=args.progress_bar)
+        mcmc = MCMC(nuts_kernel, num_warmup=10000, num_samples=20000, progress_bar=testing)
         mcmc.run(random.PRNGKey(0), table, i_table, data, bulged)
         mcmc.print_summary()
         samples = mcmc.get_samples()
 
         # Plot corner plot for MCMC samples
         # Specify ranges for log-likelihoods (mostly fixed, i.e., RARs can't be unhooked...)
-        min_smp_ll_bar, max_smp_ll_bar = jnp.min( samples["log_likelihood_gbar"] ), jnp.max( samples["log_likelihood_gbar"] )
-        min_ll_bar = min_smp_ll_bar - max( ( max_smp_ll_bar - min_smp_ll_bar ) / 2, abs(min_smp_ll_bar) / 10 )
-        max_ll_bar = max_smp_ll_bar + max( ( max_smp_ll_bar - min_smp_ll_bar ) / 2, abs(min_smp_ll_bar) / 10 )
+        # min_smp_ll_bar, max_smp_ll_bar = jnp.min( samples["log_likelihood_gbar"] ), jnp.max( samples["log_likelihood_gbar"] )
+        # min_ll_bar = min_smp_ll_bar - max( ( max_smp_ll_bar - min_smp_ll_bar ) / 2, abs(min_smp_ll_bar) / 10 )
+        # max_ll_bar = max_smp_ll_bar + max( ( max_smp_ll_bar - min_smp_ll_bar ) / 2, abs(min_smp_ll_bar) / 10 )
 
-        min_smp_ll_obs, max_smp_ll_obs = jnp.min( samples["log_likelihood_gobs"] ), jnp.max( samples["log_likelihood_gobs"] )
-        min_ll_obs = min_smp_ll_obs - max( ( max_smp_ll_obs - min_smp_ll_obs ) / 2, abs(min_smp_ll_obs) / 10 )
-        max_ll_obs = max_smp_ll_obs + max( ( max_smp_ll_obs - min_smp_ll_obs ) / 2, abs(min_smp_ll_obs) / 10 )
+        # min_smp_ll_obs, max_smp_ll_obs = jnp.min( samples["log_likelihood_gobs"] ), jnp.max( samples["log_likelihood_gobs"] )
+        # min_ll_obs = min_smp_ll_obs - max( ( max_smp_ll_obs - min_smp_ll_obs ) / 2, abs(min_smp_ll_obs) / 10 )
+        # max_ll_obs = max_smp_ll_obs + max( ( max_smp_ll_obs - min_smp_ll_obs ) / 2, abs(min_smp_ll_obs) / 10 )
 
-        min_smp_ll, max_smp_ll = jnp.min( samples["log_likelihood"] ), jnp.max( samples["log_likelihood"] )
-        min_ll = min_smp_ll - max( ( max_smp_ll - min_smp_ll ) / 2, abs(min_smp_ll) / 10 )
-        max_ll = max_smp_ll + max( ( max_smp_ll - min_smp_ll ) / 2, abs(min_smp_ll) / 10 )
+        # min_smp_ll, max_smp_ll = jnp.min( samples["log_likelihood"] ), jnp.max( samples["log_likelihood"] )
+        # min_ll = min_smp_ll - max( ( max_smp_ll - min_smp_ll ) / 2, abs(min_smp_ll) / 10 )
+        # max_ll = max_smp_ll + max( ( max_smp_ll - min_smp_ll ) / 2, abs(min_smp_ll) / 10 )
 
         corner_samples = {
             "Gas M/L (log)": samples["Gas M/L (log)"],
@@ -272,16 +288,16 @@ if __name__ == "__main__":
             "Prior LL (g_obs)": samples["prior_ll_gobs"],
             "Prior LL (all)": samples["prior_ll"]
         }
-        range = [ 1., 1., 1., 1., 1., 1., (min_ll_bar, max_ll_bar), (min_ll_obs, max_ll_obs), (min_ll, max_ll) ]
+        # range = [ 1., 1., 1., 1., 1., 1., (min_ll_bar, max_ll_bar), (min_ll_obs, max_ll_obs), (min_ll, max_ll) ]
         # Only include Bulge M/L if bulged
         if not SPARC_data[gal]["bulged"]:
             corner_samples.pop("Bulge M/L (log)")
             corner_priors.pop("Bulge M/L (log)")
-            range = range[1:]
+            # range = range[1:]
 
         sample_array = np.column_stack([np.array(corner_samples[key]) for key in corner_samples])
-        figure = corner.corner(np.column_stack([np.array(corner_priors[key]) for key in corner_priors]), show_titles=True, color="tab:blue", range=range, bins=40)
-        corner.corner(sample_array, labels=list(corner_samples.keys()), show_titles=True, color="tab:red", fig=figure, range=range, bins=40)
+        figure = corner.corner(sample_array, labels=list(corner_samples.keys()), show_titles=True, color="tab:red", bins=40)
+        corner.corner(np.column_stack([np.array(corner_priors[key]) for key in corner_priors]), color="tab:blue", bins=40, fig=figure)
 
         figure.savefig(f"/mnt/users/koe/SPARC_RAR/plots/rm_hooks/corner_plots/{gal}.png", dpi=300)
         plt.close(figure)
