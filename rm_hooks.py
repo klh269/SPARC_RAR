@@ -62,17 +62,18 @@ def global_monotonic_ll(mu, sigma):
     mu: array of means [mu_1, mu_2, ..., mu_n]
     sigma: array of std deviations [sigma_1, ..., sigma_n]
 
-    Returns: scalar log-likelihood preferring x_m > x_n for all m > n (global monotonicity).
+    Returns: scalar log-likelihood preferring x_m < x_n for all m > n (global monotonicity).
+    NOTE: points are arranged by radii, so we want monotonically decreasing functions!
     """
     # Pairwise differences and denominators via broadcasting
     dmu = mu[:, None] - mu[None, :]                         # shape (n, n)
     denom = jnp.sqrt(sigma[:, None]**2 + sigma[None, :]**2) # (n, n)
 
-    # z-scores; mask diagonal / lower triangle
+    # z-scores; mask diagonal / upper triangle
     z = dmu / (denom + 1e-30)                           # avoid division by zero
-    mask = jnp.tril(jnp.ones_like(z, dtype=bool), k=-1) # m > n -> lower triangle
+    mask = jnp.triu(jnp.ones_like(z, dtype=bool), k=1)  # m < n -> upper triangle
 
-    # Sum log Phi only over m > n
+    # Sum log Phi only over m < n
     return jnp.sum(jnp.where(mask, log_ndtr(z), 0.0))
 
 def discrete_monotonic_ll(arr):
@@ -86,11 +87,11 @@ def discrete_monotonic_ll(arr):
     # Create difference matrix: diff[i,j] = arr[i] - arr[j]
     diff = arr[:, jnp.newaxis] - arr[jnp.newaxis, :]
     
-    # Get lower triangle (i > j)
-    i_idx, j_idx = jnp.tril_indices(n, k=-1)
+    # Get upper triangle (i < j)
+    i_idx, j_idx = jnp.triu_indices(n, k=1)
     differences = diff[i_idx, j_idx]
     
-    score = jnp.sum(differences >= 0) / len(differences)
+    score = ( jnp.sum(differences >= 0) + 1 ) / ( len(differences) + 1 )    # +1s inserted to avoid log(0).
     return jnp.log(score)
 
 
@@ -167,26 +168,27 @@ def g_obs_fit(table, i_table, data, bulged, pdisk:float=pdisk, pbul:float=pbul):
     prior_e_gobs = errV2errA(prior_Vobs, prior_e_Vobs, prior_r)
 
     # Track original log-likelihood for reference.
-    # prior_ll_gbar = discrete_monotonic_ll(prior_g_bar)
+    prior_ll_gbar = discrete_monotonic_ll(prior_g_bar)
     prior_ll_gobs = global_monotonic_ll(prior_g_obs, prior_e_gobs)
-    # deterministic("prior_ll", prior_ll_gbar + prior_ll_gobs)
 
     # Small variation to artificially create dynamic range for corner plots whenever necessary.
-    # deterministic("prior_ll_gobs", prior_ll_gobs)
-    # deterministic("prior_ll_gbar", prior_ll_gbar)
-    # sample("prior_ll_gbar", dist.Normal(prior_ll_gbar, jnp.abs(prior_ll_gbar/100.0)))
-    sample("prior_ll_gobs", dist.Normal(prior_ll_gobs, jnp.abs(prior_ll_gobs/100.0)))
+    deterministic("prior_ll_gobs", prior_ll_gobs)
+    deterministic("prior_ll_gbar", prior_ll_gbar)
+    # prior_ll_gbar = sample("prior_ll_gbar", dist.Normal(prior_ll_gbar, jnp.abs(prior_ll_gbar/1e3)))
+    # prior_ll_gobs = sample("prior_ll_gobs", dist.Normal(prior_ll_gobs, jnp.abs(prior_ll_gobs/1e3)))
+    deterministic("prior_ll", prior_ll_gbar + prior_ll_gobs)
 
     # Likelihood: monotonicity constraint on the RAR (probabilistic for g_obs and deterministic for g_bar).
-    # ll_gbar = discrete_monotonic_ll(g_bar)
+    ll_gbar = discrete_monotonic_ll(g_bar)
     ll_gobs = global_monotonic_ll(g_obs, e_gobs)
-    ll = deterministic("log_likelihood", ll_gobs)   # Testing without considering monotonicity in g_bar.
-    # ll = deterministic("log_likelihood", ll_gbar + ll_gobs)
+    # ll = deterministic("log_likelihood", ll_gobs)   # Testing without considering monotonicity in g_bar.
 
-    # deterministic("log_likelihood_gobs", ll_gobs)
-    # deterministic("log_likelihood_gbar", ll_gbar)
-    # sample("log_likelihood_gbar", dist.Normal(ll_gbar, jnp.abs(ll_gbar/100.0)))
-    sample("log_likelihood_gobs", dist.Normal(ll_gobs, jnp.abs(ll_gobs/100.0)))
+    deterministic("log_likelihood_gobs", ll_gobs)
+    deterministic("log_likelihood_gbar", ll_gbar)
+    # ll_gbar = sample("log_likelihood_gbar", dist.Normal(ll_gbar, jnp.abs(ll_gbar/1e3)))
+    # ll_gobs = sample("log_likelihood_gobs", dist.Normal(ll_gobs, jnp.abs(ll_gobs/1e3)))
+
+    ll = deterministic("log_likelihood", ll_gbar + ll_gobs)
 
     factor("ll", ll)
 
@@ -235,6 +237,19 @@ if __name__ == "__main__":
         samples = mcmc.get_samples()
 
         # Plot corner plot for MCMC samples
+        # Specify ranges for log-likelihoods (mostly fixed, i.e., RARs can't be unhooked...)
+        min_smp_ll_bar, max_smp_ll_bar = jnp.min( samples["log_likelihood_gbar"] ), jnp.max( samples["log_likelihood_gbar"] )
+        min_ll_bar = min_smp_ll_bar - max( ( max_smp_ll_bar - min_smp_ll_bar ) / 2, abs(min_smp_ll_bar) / 10 )
+        max_ll_bar = max_smp_ll_bar + max( ( max_smp_ll_bar - min_smp_ll_bar ) / 2, abs(min_smp_ll_bar) / 10 )
+
+        min_smp_ll_obs, max_smp_ll_obs = jnp.min( samples["log_likelihood_gobs"] ), jnp.max( samples["log_likelihood_gobs"] )
+        min_ll_obs = min_smp_ll_obs - max( ( max_smp_ll_obs - min_smp_ll_obs ) / 2, abs(min_smp_ll_obs) / 10 )
+        max_ll_obs = max_smp_ll_obs + max( ( max_smp_ll_obs - min_smp_ll_obs ) / 2, abs(min_smp_ll_obs) / 10 )
+
+        min_smp_ll, max_smp_ll = jnp.min( samples["log_likelihood"] ), jnp.max( samples["log_likelihood"] )
+        min_ll = min_smp_ll - max( ( max_smp_ll - min_smp_ll ) / 2, abs(min_smp_ll) / 10 )
+        max_ll = max_smp_ll + max( ( max_smp_ll - min_smp_ll ) / 2, abs(min_smp_ll) / 10 )
+
         corner_samples = {
             "Gas M/L (log)": samples["Gas M/L (log)"],
             "Disk M/L (log)": samples["Disk M/L (log)"],
@@ -242,9 +257,9 @@ if __name__ == "__main__":
             "inc": samples["inc"],
             "Distance": samples["Distance"],
             "L": samples["L"],
-            # "LL (g_bar)": samples["log_likelihood_gbar"],
+            "LL (g_bar)": samples["log_likelihood_gbar"],
             "LL (g_obs)": samples["log_likelihood_gobs"],
-            # "LL (all)": samples["log_likelihood"]
+            "LL (all)": samples["log_likelihood"]
         }
         corner_priors = {
             "Gas M/L (log)": samples["Gas M/L (prior)"],
@@ -253,23 +268,26 @@ if __name__ == "__main__":
             "inc": samples["inc (prior)"],
             "Distance": samples["Distance (prior)"],
             "L": samples["L (prior)"],
-            # "Prior LL (g_bar)": samples["prior_ll_gbar"],
+            "Prior LL (g_bar)": samples["prior_ll_gbar"],
             "Prior LL (g_obs)": samples["prior_ll_gobs"],
-            # "Prior LL (all)": samples["prior_ll"]
+            "Prior LL (all)": samples["prior_ll"]
         }
+        range = [ 1., 1., 1., 1., 1., 1., (min_ll_bar, max_ll_bar), (min_ll_obs, max_ll_obs), (min_ll, max_ll) ]
         # Only include Bulge M/L if bulged
         if not SPARC_data[gal]["bulged"]:
             corner_samples.pop("Bulge M/L (log)")
             corner_priors.pop("Bulge M/L (log)")
+            range = range[1:]
 
         sample_array = np.column_stack([np.array(corner_samples[key]) for key in corner_samples])
-        figure = corner.corner(np.column_stack([np.array(corner_priors[key]) for key in corner_priors]), show_titles=True, color="tab:blue")
-        corner.corner(sample_array, labels=list(corner_samples.keys()), show_titles=True, color="tab:red", fig=figure)
+        figure = corner.corner(np.column_stack([np.array(corner_priors[key]) for key in corner_priors]), show_titles=True, color="tab:blue", range=range, bins=40)
+        corner.corner(sample_array, labels=list(corner_samples.keys()), show_titles=True, color="tab:red", fig=figure, range=range, bins=40)
 
         figure.savefig(f"/mnt/users/koe/SPARC_RAR/plots/rm_hooks/corner_plots/{gal}.png", dpi=300)
         plt.close(figure)
         print("Corner plots saved.")
 
+        # Create individual plots to compare RARs before and after fits.
         log_likelihood = samples["log_likelihood"]
         max_ll_idx = jnp.argmax(log_likelihood)
         g_bar = samples["g_bar"][max_ll_idx]
@@ -377,7 +395,7 @@ if __name__ == "__main__":
     
 #     Returns log-likelihood that the sequence is (pairwise) monotonically increasing.
 #     """
-#     diffs = mu[1:] - mu[:-1]
+#     diffs = mu[:-1] - mu[1:]
 #     denom = jnp.sqrt(sigma[1:]**2 + sigma[:-1]**2)
 #     z = diffs / denom
 #     probs = norm.cdf(z)     # Use standard normal CDF (creds to Richard for derivation)
